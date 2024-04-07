@@ -1,12 +1,20 @@
-use std::str::FromStr;
-use std::sync::RwLock;
+use std::sync::Arc;
 
+use base64::Engine;
+use futures::StreamExt;
+use mongodb::bson::doc;
+use rocket::{get, routes, State};
+use tokio::sync::RwLock;
+
+use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
-use url::Url;
+use types::api::CompressedEvent;
+use types::timing::TimeRange;
+use crate::{error, Plugin as _};
 
 use crate::cache::Cache;
+use crate::db::{Database, Event};
 use crate::PluginData;
-use crate::config::Config;
 
 #[derive(Deserialize)]
 struct ConfigData {
@@ -16,7 +24,7 @@ struct ConfigData {
 
 #[derive(Deserialize, Serialize, Default)]
 struct LastGameCache {
-    pub last_game_id: String
+    pub last_game: Option<(Game, DateTime<Utc>)>
 }
 
 pub struct Plugin {
@@ -55,20 +63,138 @@ impl crate::Plugin for Plugin {
     fn request_loop<'a>(
             &'a self,
         ) -> std::pin::Pin<Box<dyn futures::Future<Output = Option<chrono::Duration>> + Send + 'a>> {
-        
+        Box::pin(async move {
+            if let Err(e) = self.update_playing_status().await {
+                error::error_string(self.plugin_data.database.clone(), format!("Unable to update playing status: {}", e), Some(Plugin::get_type()))
+            }
+
+            Some(Duration::try_seconds(30).unwrap())
+        })
     }
 
     fn get_compressed_events(
             &self,
             query_range: &types::timing::TimeRange,
         ) -> std::pin::Pin<Box<dyn futures::Future<Output = types::api::APIResult<Vec<types::api::CompressedEvent>>> + Send>> {
-        Box::pin(async move {
-            Ok(Vec::new())
+        let filter = Database::combine_documents(Database::generate_find_plugin_filter(Plugin::get_type()), Database::combine_documents(Database::generate_range_filter(query_range), doc! {
+                "event.event_type": "Game"
+        }));
+        let database = self.plugin_data.database.clone();
+        Box::pin(async move { 
+            let mut cursor = database
+                .get_events::<GameSave>()
+                .find(filter, None)
+                .await?;
+            let mut result = Vec::new();
+            while let Some(v) = cursor.next().await {
+                let t = v?;
+                result.push(CompressedEvent {
+                    title: t.event.game.name.clone(),
+                    time: t.timing,
+                    data: Box::new(t.event.game),
+                })
+            }
+
+            Ok(result)
         })
+    }
+
+    fn get_routes() -> Vec<rocket::Route>
+        where
+            Self: Sized, {
+        routes![get_cover]
     }
 }
 
 impl Plugin {
+    pub async fn update_playing_status(&self) ->  Result<(), String> {
+        enum Action {
+            SaveGame(Game, TimeRange),
+            Nothing
+        }
+        let mut action = Action::Nothing;
+
+        let game = self.get_current_game().await?;
+        if let Err(e) = self.cache.write().await.modify::<Plugin>(|cache| {
+            match (&cache.last_game, game) {
+                (Some(_game_start), None) => {
+                    let game_start = cache.last_game.take().unwrap(); //we just tested for this
+                    action = Action::SaveGame(game_start.0, TimeRange { start: game_start.1, end: Utc::now() });
+                }
+                (None, Some(current_game)) => {
+                    cache.last_game = Some((current_game, Utc::now()));
+                    action = Action::Nothing
+                }
+                (_, _) => {
+                    action = Action::Nothing
+                }
+            }
+        }) {
+            return Err(format!("Unable to read/write cache: {}", e));
+        }
+
+        if let Action::SaveGame(game, range) = action {
+            self.check_or_insert_game_cover(&game).await?;
+            match self.plugin_data.database.register_single_event(&Event { id: format!("{}@{}", game.id, serde_json::to_string(&range).unwrap()), timing: types::timing::Timing::Range(range), plugin: Plugin::get_type(), event: GameSave {
+                game, 
+                event_type: EventType::Game
+            } }).await {
+                Ok(_) => {},
+                Err(e) => {
+                    return Err(format!("Unable to register game: {}", e));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    pub async fn check_or_insert_game_cover (&self, game: &Game) -> Result<(), String>{
+        let cnt = self.plugin_data.database.get_events::<CoverSave>().count_documents(Database::combine_documents(Database::generate_find_plugin_filter(Plugin::get_type()), doc! {
+            "event.event_type": "Cover",
+            "event.game_id": game.id.clone()
+        }), None).await;
+
+        let cnt = match cnt {
+            Ok(v) => v,
+            Err(e) => {
+                return Err(format!("Error getting current cover: {}", e));
+            }
+        };
+
+        if cnt > 0 {
+            return Ok(());
+        }
+        
+        let buffer = match reqwest::get(format!("https://cdn.cloudflare.steamstatic.com/steam/apps/{}/header.jpg", game.id)).await {
+            Ok(v) => {
+                match v.bytes().await {
+                    Ok(v) => {
+                        base64::prelude::BASE64_STANDARD.encode(v)
+                    }
+                    Err(e) => {
+                        return Err(format!("Unable to read game cover response: {}", e));
+                    }
+                }
+            }
+            Err(e) => {
+                return Err(format!("Unable to fetch game cover: {}", e));
+            }
+        };
+        match self.plugin_data.database.register_single_event(&Event { timing: types::timing::Timing::Instant(Utc::now()), id: game.id.clone(), plugin: Plugin::get_type(), event: CoverSave {
+            data: buffer,
+            game_id: game.id.clone(),
+            event_type: EventType::Cover
+        }}).await {
+            Ok(_v) => {},
+            Err(e) => {
+                return Err(format!("Unable to save game cover in database: {}", e));
+            }
+        }
+
+        Ok(())
+    }
+
     pub async fn get_current_game(&self) -> Result<Option<Game>, String> {
         let res = reqwest::get(format!("https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v0002/?key={}&steamids={}", self.config.api_key, self.config.user_steam_id)).await;
         let res = match res {
@@ -105,7 +231,43 @@ impl Plugin {
     }
 }
 
-struct Game {
+#[get("/<game_id>")]
+async fn get_cover(database: &State<Arc<Database>>, game_id: &str) -> Option<Vec<u8>> {
+    match database.get_events::<CoverSave>().find_one(Database::combine_documents(Database::generate_find_plugin_filter(Plugin::get_type()), doc! {
+        "event.event_type": "Cover",
+        "event.game_id": game_id
+    }), None).await {
+        Ok(Some(v)) => {
+            Some(base64::prelude::BASE64_STANDARD.decode(v.event.data).unwrap())
+        }
+        _ => {
+            None
+        }
+    }
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+//i know this is shit
+enum EventType {
+    Game,
+    Cover
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+struct CoverSave {
+    data: String,
+    game_id: String,
+    event_type: EventType
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+struct GameSave {
+    game: Game, 
+    event_type: EventType
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct Game {
     name: String,
     id: String
 }
