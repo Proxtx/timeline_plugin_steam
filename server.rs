@@ -1,20 +1,16 @@
-use std::sync::Arc;
-
-use base64::Engine;
-use futures::StreamExt;
-use mongodb::bson::doc;
-use rocket::{get, routes, State};
-use tokio::sync::RwLock;
-
-use chrono::{DateTime, Duration, Utc};
-use serde::{Deserialize, Serialize};
-use types::api::CompressedEvent;
-use types::timing::TimeRange;
-use crate::{error, Plugin as _};
-
-use crate::cache::Cache;
-use crate::db::{Database, Event};
-use crate::PluginData;
+use {
+    std::sync::Arc,
+    base64::Engine,
+    futures::StreamExt,
+    mongodb::bson::doc,
+    rocket::{get, routes, State},
+    tokio::sync::RwLock,
+    chrono::{DateTime, Duration, Utc},
+    serde::{Deserialize, Serialize},
+    types::{api::CompressedEvent,
+    timing::TimeRange},
+    crate::{error, Plugin as _, cache::Cache, db::{Database, Event}, PluginData}
+};
 
 #[derive(Deserialize)]
 struct ConfigData {
