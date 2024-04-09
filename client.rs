@@ -1,11 +1,11 @@
 use { 
     leptos::{view, IntoView, View}, 
-    url::Url,
     serde::{Deserialize, Serialize},
     crate::plugin_manager::PluginData
 };
 
 pub struct Plugin {
+    #[allow(unused)]
     plugin_data: PluginData,
 }
 
