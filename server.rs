@@ -121,6 +121,12 @@ impl Plugin {
                     cache.last_game = Some((current_game, Utc::now()));
                     action = Action::Nothing
                 }
+                (Some(last_game), Some(current_game)) => {
+                    if last_game.0 != current_game {
+                        cache.last_game = Some((current_game, Utc::now()));
+                    }
+                    action = Action::Nothing
+                }
                 (_, _) => {
                     action = Action::Nothing
                 }
@@ -262,7 +268,7 @@ struct GameSave {
     event_type: EventType
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct Game {
     name: String,
     id: String
