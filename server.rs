@@ -9,7 +9,7 @@ use {
     serde::{Deserialize, Serialize},
     types::{api::CompressedEvent,
     timing::TimeRange},
-    crate::{error, Plugin as _, cache::Cache, db::{Database, Event}, PluginData}
+    crate::{Plugin as _, cache::Cache, db::{Database, Event}, PluginData}
 };
 
 #[derive(Deserialize)]
@@ -61,7 +61,7 @@ impl crate::Plugin for Plugin {
         ) -> std::pin::Pin<Box<dyn futures::Future<Output = Option<chrono::Duration>> + Send + 'a>> {
         Box::pin(async move {
             if let Err(e) = self.update_playing_status().await {
-                error::error_string(self.plugin_data.database.clone(), format!("Unable to update playing status: {}", e), Some(Plugin::get_type()))
+                self.plugin_data.report_error_string(format!("Unable to update playing status: {}", e))
             }
 
             Some(Duration::try_seconds(30).unwrap())
