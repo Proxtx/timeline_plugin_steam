@@ -35,10 +35,10 @@ impl crate::Plugin for Plugin {
             Self: Sized {
         let config: ConfigData = toml::Value::try_into(
             data.config
-                .clone().expect("Failed to init spotify plugin! No config was provided!")
+                .clone().expect("Failed to init steam plugin! No config was provided!")
                 ,
         )
-        .unwrap_or_else(|e| panic!("Unable to init spotify plugin! Provided config does not fit the requirements: {}", e));
+        .unwrap_or_else(|e| panic!("Unable to init steam plugin! Provided config does not fit the requirements: {}", e));
 
         let cache: Cache<LastGameCache> =
             Cache::load::<Plugin>().await.unwrap_or_else(|e| {
