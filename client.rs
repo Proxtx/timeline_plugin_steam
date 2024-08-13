@@ -18,7 +18,7 @@ impl crate::Plugin for Plugin {
             }
     }
 
-    fn get_component(&self, data: crate::plugin_manager::PluginEventData) -> crate::event_manager::EventResult<Box<dyn FnOnce() -> leptos::View>> {
+    fn get_component(&self, data: crate::plugin_manager::PluginEventData) -> crate::plugin_manager::EventResult<Box<dyn FnOnce() -> leptos::View>> {
         let data = data.get_data::<Game>()?;
         Ok(Box::new(move || -> View {
             view! {
