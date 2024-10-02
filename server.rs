@@ -18,7 +18,7 @@ struct ConfigData {
     pub user_steam_id: String
 }
 
-#[derive(Deserialize, Serialize, Default)]
+#[derive(Deserialize, Serialize, Default, Clone)]
 struct LastGameCache {
     pub last_game: Option<(Game, DateTime<Utc>)>
 }
@@ -108,10 +108,12 @@ impl Plugin {
             SaveGame(Game, TimeRange),
             Nothing
         }
-        let mut action = Action::Nothing;
+        let action;
 
         let game = self.get_current_game().await?;
-        if let Err(e) = self.cache.write().await.modify::<Plugin>(|cache| {
+
+        {
+            let mut cache = self.cache.read().await.get().clone();
             match (&cache.last_game, game) {
                 (Some(_game_start), None) => {
                     let game_start = cache.last_game.take().unwrap(); //we just tested for this
@@ -131,8 +133,7 @@ impl Plugin {
                     action = Action::Nothing
                 }
             }
-        }) {
-            return Err(format!("Unable to read/write cache: {}", e));
+            let _ = self.cache.write().await.update::<Plugin>(cache);
         }
 
         if let Action::SaveGame(game, range) = action {
@@ -168,7 +169,8 @@ impl Plugin {
             return Ok(());
         }
         
-        let buffer = match reqwest::get(format!("https://cdn.cloudflare.steamstatic.com/steam/apps/{}/header.jpg", game.id)).await {
+        let client = reqwest::Client::new();
+        let buffer = match client.get(format!("https://cdn.cloudflare.steamstatic.com/steam/apps/{}/header.jpg", game.id)).timeout(std::time::Duration::from_secs(30)).send().await {
             Ok(v) => {
                 match v.bytes().await {
                     Ok(v) => {
@@ -198,7 +200,8 @@ impl Plugin {
     }
 
     pub async fn get_current_game(&self) -> Result<Option<Game>, String> {
-        let res = reqwest::get(format!("https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v0002/?key={}&steamids={}", self.config.api_key, self.config.user_steam_id)).await;
+        let client = reqwest::Client::new();
+        let res = client.get(format!("https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v0002/?key={}&steamids={}", self.config.api_key, self.config.user_steam_id)).timeout(std::time::Duration::from_secs(30)).send().await;
         let res = match res {
             Ok(v) => match v.text().await {
                 Ok(v) => v,
@@ -240,7 +243,10 @@ async fn get_cover(database: &State<Arc<Database>>, game_id: &str) -> Option<Vec
         "event.game_id": game_id
     }), None).await {
         Ok(Some(v)) => {
-            Some(base64::prelude::BASE64_STANDARD.decode(v.event.data).unwrap())
+            match base64::prelude::BASE64_STANDARD.decode(v.event.data) {
+                Ok(v) => Some(v),
+                Err(_e) => None,
+            }    
         }
         _ => {
             None
