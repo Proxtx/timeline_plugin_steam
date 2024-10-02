@@ -43,7 +43,7 @@ impl crate::Plugin for Plugin {
         let cache: Cache<LastGameCache> =
             Cache::load::<Plugin>().await.unwrap_or_else(|e| {
                 panic!(
-                    "Failed to init media_scan plugin! Unable to load cache: {}",
+                    "Failed to init steam plugin! Unable to load cache: {}",
                     e
                 )
             });
