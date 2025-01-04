@@ -1,0 +1,10 @@
+[package]
+name = "timeline_plugin_steam_server"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+server_api = { path = "../../../server_api/" }
+serde = { version = "1.0.215", features = ["derive"] }
+rocket = { version = "0.5.1", features = ["json"] }
+base64 = "0.22.1"
